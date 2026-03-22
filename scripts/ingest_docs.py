@@ -1,6 +1,6 @@
 """
 scripts/ingest_docs.py - 文档入库 CLI 工具
-将 PDF 文档或网页批量加载、切块并存入本地 ChromaDB 向量数据库。
+将 PDF 文档或网页批量加载、切块并存入本地 FAISS 向量数据库。
 
 使用示例：
   # 加载目录中的所有 PDF
@@ -63,7 +63,7 @@ def parse_args():
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="⚠️  重置（清空）向量数据库后重新入库",
+        help="重置（清空）向量数据库后重新入库",
     )
     return parser.parse_args()
 
@@ -82,7 +82,7 @@ def main():
     
     # 如果需要重置
     if args.reset:
-        logger.warning("⚠️  即将删除现有向量数据库并重新构建...")
+        logger.warning("即将删除现有向量数据库并重新构建...")
         delete_vectorstore()
     
     print("\n" + "="*60)
@@ -98,11 +98,11 @@ def main():
     )
     
     # 第二步：向量化并入库
-    logger.info(f"\n步骤 2/2: 向量化 {len(chunks)} 个文本块并存入 ChromaDB...")
+    logger.info(f"\n步骤 2/2: 向量化 {len(chunks)} 个文本块并存入 FAISS...")
     vectorstore = build_vectorstore(chunks)
-    
+
     print("\n" + "="*60)
-    print(f"  ✅ 入库完成！共处理 {len(chunks)} 个文本块")
+    print(f"  入库完成！共处理 {len(chunks)} 个文本块")
     print("  现在可以运行: streamlit run app.py")
     print("="*60 + "\n")
 

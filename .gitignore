@@ -20,6 +20,20 @@ env/
 
 # ChromaDB 向量库（体积大，可本地重建）
 data/chroma_db/
+data/faiss_index/
+data/docs/
+
+# 实验输出 / 日志
+*.log
+*_log.txt
+experiment_results.md
+retrieval_experiment_results.md
+rerank_experiment_results.md
+data/retrieval_experiment_results.json
+data/rerank_experiment_results.json
+
+# 临时调试脚本
+debug_*.py
 
 # HuggingFace 模型缓存
 .cache/

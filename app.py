@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import logging
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -163,6 +164,15 @@ def init_session_state():
 
 init_session_state()
 
+if "agent_thread_id" not in st.session_state or not st.session_state.agent_thread_id:
+    st.session_state.agent_thread_id = str(uuid.uuid4())
+if "use_langgraph_agent" not in st.session_state:
+    st.session_state.use_langgraph_agent = True
+if "langgraph_agent" not in st.session_state:
+    st.session_state.langgraph_agent = None
+if "langgraph_agent_retriever_id" not in st.session_state:
+    st.session_state.langgraph_agent_retriever_id = None
+
 
 # ─── 组件加载函数（带缓存）────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="正在加载向量数据库...")
@@ -191,7 +201,7 @@ def get_rag_components(use_multi_query: bool = True):
         if vs is None:
             return False
         
-        from config import get_llm
+        from config import RETRIEVAL_MODE, RERANK_ENABLED, get_llm
         from src.retriever import get_retriever, get_simple_retriever
         from src.rag_chain import get_rag_chain
         
@@ -199,9 +209,18 @@ def get_rag_components(use_multi_query: bool = True):
         llm_query  = get_llm(streaming=False)
         
         if use_multi_query:
-            retriever = get_retriever(vs, llm_query)
+            retriever = get_retriever(
+                vs,
+                llm_query,
+                mode=RETRIEVAL_MODE,
+                enable_rerank=RERANK_ENABLED,
+            )
         else:
-            retriever = get_simple_retriever(vs)
+            retriever = get_simple_retriever(
+                vs,
+                mode=RETRIEVAL_MODE,
+                enable_rerank=RERANK_ENABLED,
+            )
         
         st.session_state.retriever = retriever
         st.session_state.rag_chain = get_rag_chain(retriever, llm_stream)
@@ -249,7 +268,8 @@ with st.sidebar:
         if st.button("📥 开始入库", use_container_width=True):
             with st.spinner("正在处理文档，请稍候..."):
                 try:
-                    from src.ingestion import chunk_documents, load_pdf
+                    from src.ingestion import chunk_documents
+                    from src.pdf_parser import parse_pdf
                     from src.vectorstore import build_vectorstore
                     
                     all_chunks = []
@@ -262,7 +282,7 @@ with st.sidebar:
                             tmp.write(uploaded_file.getvalue())
                             tmp_path = tmp.name
                         
-                        docs = load_pdf(tmp_path)
+                        docs = parse_pdf(tmp_path)
                         # 修正 metadata 中的来源文件名
                         for doc in docs:
                             doc.metadata["source"] = uploaded_file.name
@@ -285,11 +305,19 @@ with st.sidebar:
     
     # 检索配置
     st.markdown("### ⚙️ 检索配置")
+    use_agent = st.toggle(
+        "LangGraph Agent 模式",
+        key="use_langgraph_agent",
+        help="用 LangGraph 做简单 Agent 路由：直答 / 澄清 / 资料检索(RAG)。",
+    )
+
     use_multi_query = st.toggle(
         "多查询扩展 (Multi-Query)",
         value=True,
         help="使用 LLM 将问题改写为多个角度，提升召回率",
     )
+    from config import RETRIEVAL_MODE, RERANK_ENABLED
+    st.caption(f"当前基础召回策略: `{RETRIEVAL_MODE}` | Rerank: `{RERANK_ENABLED}`")
     
     st.markdown("---")
     
@@ -300,7 +328,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown(
-        "<small>🔬 基于 LangChain LCEL · ChromaDB · HuggingFace<br>"
+        "<small>🔬 基于 LangChain LCEL · FAISS/BM25 + Reranker · HuggingFace<br>"
         "📊 评估: `python src/evaluation.py`</small>",
         unsafe_allow_html=True,
     )
@@ -330,9 +358,9 @@ for message in st.session_state.messages:
         sources_html = ""
         if sources:
             source_list = "".join(
-                f"<div>📄 {s.get('source', '未知')} "
+                f"<div>[{int(s.get('ref', i + 1))}] 📄 {s.get('source', '未知')} "
                 f"第 {int(s.get('page', 0)) + 1} 页</div>"
-                for s in sources[:4]
+                for i, s in enumerate(sources[:4])
             )
             sources_html = f'<div class="source-citation">📌 引用来源：{source_list}</div>'
         
@@ -372,6 +400,35 @@ if question and has_vs:
     else:
         chain = st.session_state.rag_chain
         retriever = st.session_state.retriever
+
+        # LangGraph Agent 模式：先运行 Agent，把结果写入 messages 后 rerun，避免改动下方的流式 UI
+        if st.session_state.use_langgraph_agent:
+            try:
+                from config import get_llm
+                from src.langgraph_agent import build_langgraph_rag_agent
+
+                llm_agent = get_llm(streaming=False)
+                if (
+                    st.session_state.langgraph_agent is None
+                    or st.session_state.langgraph_agent_retriever_id != id(retriever)
+                ):
+                    st.session_state.langgraph_agent = build_langgraph_rag_agent(retriever, llm_agent)
+                    st.session_state.langgraph_agent_retriever_id = id(retriever)
+
+                result = st.session_state.langgraph_agent.invoke(
+                    question,
+                    chat_history=st.session_state.messages,
+                    thread_id=st.session_state.agent_thread_id,
+                )
+                full_answer = (result or {}).get("answer", "") or ""
+                sources = (result or {}).get("sources", []) or []
+
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": full_answer, "sources": sources}
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"LangGraph Agent 运行失败: {str(e)}")
         
         # 流式生成答案
         with st.container():
@@ -396,15 +453,16 @@ if question and has_vs:
                 retrieved_docs = retriever.invoke(question)
                 sources = [
                     {
+                        "ref": idx,
                         "source": Path(doc.metadata.get("source", "未知")).name,
                         "page": doc.metadata.get("page", 0),
                     }
-                    for doc in retrieved_docs[:4]
+                    for idx, doc in enumerate(retrieved_docs[:4], start=1)
                 ]
                 
                 if sources:
                     source_items = "".join(
-                        f"<div>📄 {s['source']} 第 {int(s['page']) + 1} 页</div>"
+                        f"<div>[{int(s.get('ref', 0))}] 📄 {s['source']} 第 {int(s['page']) + 1} 页</div>"
                         for s in sources
                     )
                     st.markdown(

@@ -1,179 +1,259 @@
 # 智能进阶文档问答助手
 
-> 一个基于 LangChain LCEL 的企业级 RAG 系统，支持 PDF 文档问答、多查询扩展检索、流式输出和自动化 Ragas 评估。
+一个面向中文金融文档场景的 RAG Demo，支持：
+- 高级 PDF 解析：多栏识别、页眉页脚过滤、表格抽取与表格保护切块
+- 本地向量检索：`FAISS + bge-large-zh-v1.5`
+- 多路召回：`FAISS / BM25 / Hybrid`
+- 重排优化：`bge-reranker-v2-m3`
+- 保守生成：带证据编号回答、低置信度拒答、回答后校验
+- Web Demo：`Streamlit`
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![LangChain](https://img.shields.io/badge/LangChain-LCEL-green) ![ChromaDB](https://img.shields.io/badge/Vector%20Store-ChromaDB-orange) ![Streamlit](https://img.shields.io/badge/UI-Streamlit-red)
+当前项目已经完成多轮升级，适合拿来做：
+- PDF 文档问答 Demo
+- RAG 检索策略实验
+- 金融研报 / 财报类问答原型
+- 面试或作品集展示
 
----
+## 1. 当前能力
 
-## 系统架构
+### 检索链路
 
+默认链路为：
+
+`Hybrid Retrieval -> Top20 Candidate Fetch -> Rerank -> Top5 -> Grounded Answer`
+
+其中包括：
+- `FAISS` 稠密召回
+- `BM25` 稀疏召回
+- 分数加权融合
+- `bge-reranker-v2-m3` 重排
+- 空召回时 `query rewrite`
+- 热点问题缓存
+
+### 生成链路
+
+回答阶段不是直接“让模型自由回答”，而是做了约束：
+- 每个关键结论尽量附 `[1]`、`[2]` 证据编号
+- 无证据、低置信度、引用异常时自动收敛为“我不确定”
+- 回答后会做一次轻量后校验，尽量避免幻觉式数字和无来源结论
+
+### 已完成实验
+
+项目内已经包含以下实验脚本与实验日志：
+- 切块策略实验：`scripts/experiment_chunking.py`
+- 召回策略实验：`scripts/experiment_retrieval.py`
+- 重排实验脚本：`scripts/experiment_rerank.py`
+- 升级日志：`upgrade_log.md`
+
+## 2. 项目结构
+
+```text
+smart-rag-assistant/
+├── app.py
+├── config.py
+├── requirements.txt
+├── README.md
+├── .env.example
+├── upgrade_log.md
+│
+├── src/
+│   ├── pdf_parser.py
+│   ├── ingestion.py
+│   ├── vectorstore.py
+│   ├── retriever.py
+│   ├── reranker.py
+│   ├── robust_retriever.py
+│   ├── answering.py
+│   ├── rag_chain.py
+│   ├── langgraph_agent.py
+│   └── evaluation.py
+│
+├── scripts/
+│   ├── ingest_docs.py
+│   ├── run_demo.ps1
+│   ├── experiment_chunking.py
+│   ├── experiment_retrieval.py
+│   ├── experiment_rerank.py
+│   └── generate_eval_dataset.py
+│
+└── data/
+    └── test_questions.json
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit Web UI (app.py)                │
-│              PDF 上传 │ 流式对话 │ 来源引用展示              │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ 用户问题
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              LCEL RAG Chain (src/rag_chain.py)              │
-│                                                             │
-│  问题 → MultiQueryRetriever → 向量检索 → Prompt → LLM      │
-│              ↓ (多角度子查询)        ↓                      │
-│           [子查询1,2,3]        ChromaDB 向量库               │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ 流式 Token
-                            ▼
-                      答案 + 引用来源
 
-监控: LangSmith  |  评估: Ragas (Faithfulness, Answer Relevancy)
-```
+说明：
+- `data/docs/` 和 `data/faiss_index/` 属于本地数据，不建议直接提交到 GitHub
+- `.env` 含 API Key，不应上传
 
----
+## 3. 环境要求
 
-## 亮点功能
+- Python `3.10+`
+- Windows / macOS / Linux 均可
+- 推荐使用虚拟环境
+- 首次运行本地 embedding / reranker 时，需要下载 HuggingFace 模型
 
-| 功能 | 说明 |
-|------|------|
-| **Multi-Query 扩展** | LLM 将问题改写为多个角度，大幅提升召回率 |
-| **LCEL 流式输出** | Token 级逐字输出，体验如 ChatGPT |
-| **本地 Embedding** | `BAAI/bge-small-zh` 免费开源，无需 API Key |
-| **LangSmith 监控** | 每步检索、Prompt、Token 消耗可视化追踪 |
-| **Ragas 自动评估** | 量化系统精度：忠实度 + 答案相关性 |
-
----
-
-## 快速开始
-
-### 1. 安装依赖
+## 4. 安装
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量
+如果你使用仓库内虚拟环境：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+## 5. 配置
+
+复制环境变量模板：
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入你的 API Key
 ```
 
-**最低配置**（只需填入 `OPENAI_API_KEY`）：
+最低需要配置：
+
 ```env
-OPENAI_API_KEY=sk-...
 LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_NAME=gpt-4o-mini
 ```
 
-**使用本地 Ollama**（无需 API Key，需先安装 [Ollama](https://ollama.ai)）：
+推荐保留当前检索配置：
+
 ```env
-LLM_PROVIDER=ollama
-OLLAMA_MODEL_NAME=llama3
+EMBEDDING_MODEL_NAME=BAAI/bge-large-zh-v1.5
+RETRIEVAL_MODE=hybrid
+HYBRID_ALPHA=0.75
+RERANK_ENABLED=true
+RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
+RERANK_FETCH_K=20
+RERANK_TOP_N=5
+QUERY_REWRITE_ENABLED=true
+HOT_QUERY_CACHE_ENABLED=true
 ```
 
-### 3. 准备文档
+如果只想跑一个更轻的 Demo，可以这样调低成本：
 
-将你的 PDF 文件放入 `data/docs/` 目录，然后运行：
+```env
+RERANK_FETCH_K=10
+RERANK_TOP_N=5
+```
+
+## 6. 准备数据
+
+把你的 PDF 放到：
+
+```text
+data/docs/
+```
+
+然后执行入库：
 
 ```bash
-python scripts/ingest_docs.py --source ./data/docs/
+python scripts/ingest_docs.py --source ./data/docs/ --reset
 ```
 
-### 4. 启动 Web 界面
+这一步会：
+- 解析 PDF
+- 做表格保护切块
+- 用 `bge-large-zh-v1.5` 向量化
+- 生成 `FAISS` 本地索引
+
+## 7. 启动 Demo
+
+### 方式 A：直接启动
 
 ```bash
 streamlit run app.py
 ```
 
-浏览器访问 `http://localhost:8501` 即可使用。
+### 方式 B：Windows 一键启动
 
----
-
-## 项目结构
-
-```
-smart-rag-assistant/
-├── app.py                      # Streamlit 前端界面
-├── config.py                   # 配置中心（读取 .env）
-├── requirements.txt
-├── .env.example                # 环境变量模板
-│
-├── src/
-│   ├── ingestion.py            # Step 1: 文档加载与文本切块
-│   ├── vectorstore.py          # Step 2: 向量化与 ChromaDB 存储
-│   ├── retriever.py            # Step 3: MultiQueryRetriever 进阶检索
-│   ├── rag_chain.py            # Step 4: LCEL 生成管道（流式输出）
-│   └── evaluation.py           # Step 5: Ragas 自动化评估
-│
-├── scripts/
-│   └── ingest_docs.py          # CLI 文档入库工具
-│
-└── data/
-    ├── docs/                   # 放置你的 PDF 文件
-    ├── chroma_db/              # ChromaDB 向量库（自动生成）
-    ├── test_questions.json     # Ragas 评估测试集
-    └── evaluation_results.csv  # 评估结果（运行后生成）
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_demo.ps1
 ```
 
----
+默认地址：
 
-## 使用指南
+```text
+http://localhost:8501
+```
 
-### 文档入库（CLI）
+说明：
+- 第一次提问时可能会慢一些，因为会加载 embedding / reranker
+- 如果你开启了 `Multi-Query + Rerank`，CPU 下延迟会明显增加
+
+## 8. 如何做一个顺滑 Demo
+
+如果你只是想现场演示，而不是追求最强效果，建议：
+
+1. 先提前跑过一次，完成模型预热
+2. 用比较具体的问题，不要一上来问非常抽象的战略判断题
+3. 如果回答偏保守，换成“请引用报告中的依据”这种问法
+4. 如果机器较慢，可以先关闭页面里的 `Multi-Query`
+
+推荐提问方式：
+- “报告中如何评价 TikTok 电商的发展路径？请引用依据”
+- “文档里对公司 2025 年增长的核心判断是什么？请标注来源”
+- “列出报告对某行业的 3 个结论，并给出页码”
+
+## 9. 评测与实验
+
+### 切块策略实验
 
 ```bash
-# 加载目录中的所有 PDF
-python scripts/ingest_docs.py --source ./data/docs/
-
-# 加载指定 PDF 文件
-python scripts/ingest_docs.py --files report.pdf thesis.pdf
-
-# 加载网页内容
-python scripts/ingest_docs.py --urls https://example.com/article
-
-# 重置向量库并重新入库
-python scripts/ingest_docs.py --source ./data/docs/ --reset
+python scripts/experiment_chunking.py
 ```
 
-### Ragas 自动化评估
+### 召回策略实验
 
-1. 编辑 `data/test_questions.json`，填入与你文档相关的问题和标准答案
-2. 运行评估：
+```bash
+python scripts/experiment_retrieval.py
+```
+
+### 重排实验
+
+```bash
+python scripts/experiment_rerank.py
+```
+
+### 自动评估
 
 ```bash
 python src/evaluation.py
 ```
 
-3. 查看结果：`data/evaluation_results.csv`
+测试集默认使用：
 
-评估指标说明：
-- **Faithfulness（忠实度）**：答案是否完全基于检索到的文档（0~1，越高越好）
-- **Answer Relevancy（答案相关性）**：答案是否真正回答了用户的问题（0~1，越高越好）
+```text
+data/test_questions.json
+```
 
----
+## 10. 当前技术栈
 
-## LangSmith 链路监控（可选）
+- `LangChain`
+- `LangGraph`
+- `Streamlit`
+- `FAISS`
+- `BM25`
+- `FlagEmbedding`
+- `PyMuPDF`
+- `pdfplumber`
+- `Ragas`
 
-1. 注册 [LangSmith](https://smith.langchain.com/) 账号（免费）
-2. 在 `.env` 中填入：
-   ```env
-   LANGCHAIN_TRACING_V2=true
-   LANGCHAIN_API_KEY=ls__...
-   LANGCHAIN_PROJECT=smart-rag-assistant
-   ```
-3. 运行任何问答，即可在 LangSmith 面板中看到完整的追踪记录
+## 11. 注意事项
 
----
+- `.env` 不要上传到 GitHub
+- `data/docs/` 不要上传真实业务 PDF
+- `data/faiss_index/` 属于可重建索引，通常不建议入库
+- 如果启用了 `LangSmith`，请确认你的网络与 API Key 都正常
+- `bge-reranker-v2-m3` 在 CPU 上较慢，完整实验可能需要很久
 
-## 核心技术栈
+## 12. 后续可继续做的方向
 
-| 组件 | 技术 |
-|------|------|
-| 核心框架 | LangChain (LCEL) |
-| LLM | OpenAI GPT-4o-mini / Ollama Llama3 |
-| Embedding | HuggingFace `BAAI/bge-small-zh` |
-| 向量数据库 | ChromaDB（本地持久化） |
-| 检索策略 | MultiQueryRetriever（多查询扩展） |
-| 输出方式 | LCEL Streaming（Token 级流式） |
-| 监控 | LangSmith |
-| 评估 | Ragas（Faithfulness + Answer Relevancy） |
-| 前端 | Streamlit |
+- 给 reranker 增加 GPU 推理支持
+- 做更严格的 citation-to-source 对齐
+- 增加多文档对比问答模板
+- 增加面向 Demo 的“快速模式 / 精准模式”切换

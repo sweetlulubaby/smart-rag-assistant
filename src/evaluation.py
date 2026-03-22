@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import pandas as pd
-from langchain_community.vectorstores import Chroma
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     TEST_DATASET_PATH,
     EVAL_RESULTS_PATH,
+    RETRIEVAL_MODE,
     get_llm,
 )
 
@@ -69,8 +69,11 @@ def generate_rag_answers(
     results = []
     
     for i, item in enumerate(test_data):
-        question = item["question"]
-        ground_truth = item.get("ground_truth", "")
+        # 兼容新旧格式
+        question = item.get("query", item.get("question", ""))
+        ground_truth = item.get("answer", item.get("ground_truth", ""))
+        q_type = item.get("type", "未知")
+        doc_id = item.get("ground_truth_doc_id", "")
         
         logger.info(f"  [{i+1}/{len(test_data)}] 生成答案: {question[:50]}...")
         
@@ -78,7 +81,7 @@ def generate_rag_answers(
         answer = rag_chain.invoke(question)
         
         # 获取检索到的文档（用于 Ragas 上下文评估）
-        retrieved_docs = retriever.get_relevant_documents(question)
+        retrieved_docs = retriever.invoke(question)
         contexts = [doc.page_content for doc in retrieved_docs]
         
         results.append({
@@ -86,6 +89,8 @@ def generate_rag_answers(
             "answer": answer,
             "contexts": contexts,
             "ground_truth": ground_truth,
+            "type": q_type,
+            "ground_truth_doc_id": doc_id,
         })
     
     return results
@@ -133,10 +138,23 @@ def run_ragas_evaluation(
     score = evaluate(dataset=dataset, metrics=metrics)
     
     results_df = score.to_pandas()
+    
+    # 将额外信息加回 DataFrame 以便于分析
+    if "type" in results[0]:
+        results_df["type"] = [r["type"] for r in results]
+    if "ground_truth_doc_id" in results[0]:
+        results_df["ground_truth_doc_id"] = [r.get("ground_truth_doc_id", "") for r in results]
+
     logger.info(f"\n{'='*50}")
-    logger.info("Ragas 评估结果：")
+    logger.info("Ragas 总体评估结果：")
     logger.info(f"  Faithfulness（忠实度）:       {results_df['faithfulness'].mean():.4f}")
     logger.info(f"  Answer Relevancy（答案相关性）: {results_df['answer_relevancy'].mean():.4f}")
+    
+    if "type" in results_df.columns:
+        logger.info("\n按 问题类型(type) 分类统计：")
+        grouped = results_df.groupby("type")[["faithfulness", "answer_relevancy"]].mean()
+        logger.info(f"\n{grouped}")
+        
     logger.info(f"{'='*50}\n")
     
     return results_df
@@ -159,6 +177,7 @@ def run_full_evaluation(
     test_dataset_path: str = TEST_DATASET_PATH,
     output_path: str = EVAL_RESULTS_PATH,
     use_multi_query: bool = True,
+    retrieval_mode: str = RETRIEVAL_MODE,
 ):
     """
     执行完整的评估流程（入口函数）。
@@ -181,11 +200,11 @@ def run_full_evaluation(
     vectorstore = get_vectorstore()
     
     if use_multi_query:
-        retriever = get_retriever(vectorstore, llm)
-        logger.info("使用 MultiQueryRetriever（多查询扩展）")
+        retriever = get_retriever(vectorstore, llm, mode=retrieval_mode)
+        logger.info(f"使用 MultiQueryRetriever（多查询扩展, 策略={retrieval_mode}）")
     else:
-        retriever = get_simple_retriever(vectorstore)
-        logger.info("使用简单相似度检索器")
+        retriever = get_simple_retriever(vectorstore, mode=retrieval_mode)
+        logger.info(f"使用基础检索器（策略={retrieval_mode}）")
     
     rag_chain = get_rag_chain(retriever, llm)
     
